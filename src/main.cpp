@@ -1,11 +1,14 @@
 #define F_CPU 3330000
-#define ALLOFF 0xFF
 
-#define SELECTED_PROGRAM 1
+#define P50Hz 3
+#define P100Hz 4
 
-#define LED_TOP 0x0D
-#define LED_MID 0x0B
-#define LED_BOT 0x0E
+#include <avr/io.h>
+#include <stdlib.h>
+#include <avr/interrupt.h> 
+
+#define MSEC_TO_TIM_TICKS(x) ((x)/10)
+#define MTTT(x) MSEC_TO_TIM_TICKS(x)
 
 #define LED_0 0x02        //PB1
 #define LED_1 0x01        //PB0
@@ -15,262 +18,338 @@
 
 #define AUX 0x02;         //PA1
 
-#define ANIMATION_2_FRAMES 6
-#define ANIMATION_1_FRAMES 17
-#define ANIMATION_0_FRAMES 6
 
+class LEDOutput {
+  public:
 
-#define DELAY 1000
+    LEDOutput() {
+        PORTB.DIR = 0xFF;
+        PORTA.DIR = 0xFD;
+    }
 
-#include <avr/io.h>
-#include <avr/interrupt.h> 
-#include <util/delay.h>
-#include <avr/sleep.h>
-#include <util/atomic.h>
+    void Set(uint8_t o) {
+      //o two lowest bits, output PB0 PB1
+      //but need to rotate these bits
+      uint8_t tmp = o & 0x03;
+      PORTB.OUT = ((tmp & (1<<0))<<1) | ((tmp & (1<<1))>>1);
+      //PORTA.OUT = 0xFF;
 
-volatile int clock_counter = 0;
-volatile uint8_t pulse_counter = 0;
-volatile int selected_animation = 1;
-
-const int animation_2[ANIMATION_2_FRAMES][6] = {
-  {0, 0, 0, 0, 1, 100},
-  {0, 0, 0, 1, 0, 100},
-  {0, 0, 0, 0, 1, 100},
-  {0, 0, 0, 1, 0, 100},
-  {0, 0, 0, 0, 1, 100},
-  {0, 0, 0, 1, 0, 100}
+      //o bits 4-2
+      //PA2, PA3, PA7
+      o |= (o & (1<<4))<<3;
+      PORTA.OUT = o & (1<<2 | 1<<3 | 1 << 7);
+    }
 };
 
-const int animation_0[ANIMATION_0_FRAMES][6] = {
-  {1, 1, 1, 0, 1, 5},
-  {1, 1, 0, 1, 1, 5},
-  {1, 0, 1, 1, 1, 5},
-  {0, 1, 1, 1, 1, 5},
-  {1, 0, 1, 1, 1, 5},
-  {1, 1, 0, 1, 1, 5}
+/*
+Instruction set:
+    OPCODE  ARGS
+0b  0 0     0 0 0 0 0 0
+ 
+ Args range: 0 - 64
 
-};
-const int animation_1[ANIMATION_1_FRAMES][6] = {
-  {0, 0, 0, 0, 1, 200},
-  {0, 0, 0, 1, 1, 5},
-  {0, 0, 1, 0, 1, 5},
-  {0, 1, 0, 0, 1, 5},
-  {1, 0, 0, 0, 1, 5},
-  {0, 0, 0, 1, 1, 4},
-  {0, 0, 1, 0, 1, 4},
-  {0, 1, 0, 0, 1, 4},
-  {1, 0, 0, 0, 1, 4},
-  {0, 0, 0, 1, 0, 3},
-  {0, 0, 1, 0, 1, 3},
-  {0, 1, 0, 0, 0, 3},
-  {1, 0, 0, 0, 1, 3},
-  {0, 0, 0, 1, 0, 2},
-  {0, 0, 1, 0, 1, 2},
-  {0, 1, 0, 0, 0, 2},
-  {1, 0, 0, 0, 1, 2}
+ PLAY    : 00  
+ JMP     : 01  Jump always back, relative jump, steps number in args
+ CNTRJMP : 10  Jump back 'time' times, steps number in args
+*/
+
+
+
+enum OPCODE {
+  OPCODE_PLAY = 0,
+  OPCODE_JMP = 1,
+  OPCODE_CNTRJMP = 2
 };
 
-const int state_machine[21][2]={
-  {13, 1},
-  {13, 2},
-  {3, 8},
-  {4, 1},
-  {15, 5},
-  {13, 6},
-  {7, 8},
-  {0, 1},
-  {3, 9},
-  {10, 9},
-  {11, 1},
-  {12, 1},
-  {0, 1},
-  {14, 1},
-  {15, 1},
-  {16, 1},
-  {17, 1},
-  {18, 1},
-  {19, 1},
-  {20, 1},
-  {0, 1}
+typedef struct animEntry {
+  OPCODE opcode : 2;
+  uint8_t args : 6;
+  uint8_t leds;
+  uint16_t time; 
+
+} animEntry;
+
+
+/*
+  Container for animation + it's play context:
+  Contains information about current step and repeat counter
+  So it's possible to pause/continue animation if needed
+  Decided to go this way as overhead is only 2 bytes per animation
+  And it gives possibility to store animation context instead of 
+  storing it externally if needed
+*/
+class Animation {
+  private:
+    const animEntry* anim;
+    const uint8_t animSize;
+
+    uint8_t current_step;
+    uint8_t repeat_cntr;
+
+  public:
+    Animation(const animEntry *_anim, uint8_t _animSize) : 
+      anim(_anim), animSize(_animSize), current_step(0), repeat_cntr(0) { };
+
+    inline const animEntry* currentStep() {
+      return &(anim[current_step]);
+    }
+
+    inline const animEntry* nextStep() {
+      if ((current_step+1) >= this->animSize) {  //If animation ends without repeat, just report last step
+        this->current_step = this->animSize; //One after last element, because that's next step
+        return &(anim[current_step]);
+      }
+
+      const animEntry* tmp = &(anim[current_step]); 
+      current_step++;
+      return tmp;
+    }
+
+    inline void moveStepCounter(uint8_t n){
+      if(n >= this->current_step)
+        this->current_step = 0;
+      else
+        this->current_step -= n;
+    }
+
+    inline void setRepeatCounter(uint8_t n){
+      repeat_cntr = n;
+    }
+
+    //Single call to repeat decreases repeat counter and returns true if anim
+    //should be repeated, or false when not
+    inline bool repeat(){
+      if(repeat_cntr > 1) {
+        repeat_cntr--;
+        return true;
+      }
+      repeat_cntr = 0;
+      return false;
+    }
+
+    inline bool repeatActive() {
+      return repeat_cntr > 0;
+    }
+
+    const inline void reset() {
+      current_step = 0;
+      repeat_cntr = 0;
+    }
+
 };
 
-volatile int state = 0;
-volatile uint8_t current_frame = 0;
+/*
+  Class responsible for executing opcodes for each instruction
+  Controlling delay and flow of single animation
+*/
+class AnimationPlayer {
+  private:
+    const Animation* a;
+    LEDOutput* out;
+
+    uint8_t delayCounter = 0;
+  public:
+
+    AnimationPlayer(LEDOutput* _out) : out(_out) {};
+
+    void setActiveAnimation(const Animation* new_a) {
+      a = new_a;
+    }
+
+    void resetAnimation() {
+      a->reset();
+    }
+
+    void step() {
+      
+      //If currently waiting, decrease delay counter and do nothing - wait
+      if(delayCounter > 0){
+        delayCounter--;
+        return;
+      }
+
+      const animEntry* step = a->nextStep();
+
+      switch(step->opcode) {
+        case OPCODE_PLAY: 
+          out->Set(step->leds);
+          this->delayCounter = step->time;
+          break;
+        case OPCODE_JMP:
+          a->moveStepCounter(step->args+1); //+1 because stepCounter is pointing to next instruction
+          break;
+        case OPCODE_CNTRJMP:
+          if (a->repeatActive()) {
+            if (a->repeat())
+              a->moveStepCounter(step->args+1);
+            return;
+          } else {
+          a->setRepeatCounter(step->time);
+          a->moveStepCounter(step->args+1); 
+          }
+          break;
+        default:
+          break;
+      }
+    }
+};
+
+/*
+  This is only class containing information about all animations
+  Reponsible for selecting animations using externally provided method
+  (sth like strategy design pattern used)
+*/
+class AnimationManager{
+  private:
+    const Animation** animList;
+    uint8_t animListSize;
+    const AnimationPlayer& p;
+
+  public:
+    AnimationManager(const Animation** _animList, uint8_t _animListSize, AnimationPlayer& _p) : 
+      animList(_animList), animListSize(_animListSize), p(_p) {
+
+        p.setActiveAnimation(animList[0]);
+        p.resetAnimation();
+      };
+
+      void play(uint8_t freq){
+        //TODO: Depending on frequency select correct animation
+        //Think how to connect external signal handling
+        //Suggestion: create small simple interface class similar to LEDOutput
+        //Which will give frequency as number 0, 1, 2: 0 -> 0 to 10hz, 1-> 11 to 70hz, 2-> over 70hz
+        if(freq < 10)
+          p.setActiveAnimation(animList[0]);
+        else if (freq >= 10 && freq < 70)
+          p.setActiveAnimation(animList[1]);
+        else
+          p.setActiveAnimation(animList[2]);
+          
+        //TODO: When animation changes, reset old animation
+        p.step();
+      }
+
+};
+
+constexpr animEntry animationSlow[] = 
+{
+  {OPCODE_PLAY, 0, 0b11110, MTTT(1000)},
+  {OPCODE_PLAY, 0, 0b11101, MTTT(1000)}, 
+  {OPCODE_PLAY, 0, 0b11011, MTTT(1000)},
+  {OPCODE_PLAY, 0, 0b10111, MTTT(1000)},
+  {OPCODE_PLAY, 0, 0b01111, MTTT(1000)}, 
+  {OPCODE_PLAY, 0, 0b11111, MTTT(1000)},
+  {OPCODE_PLAY, 0, 0b00000, MTTT(1000)},
+  {OPCODE_JMP, 7, 0b00000, 3},
+  {OPCODE_PLAY, 0, 0b10111, MTTT(250)},
+  {OPCODE_PLAY, 0, 0b01111, MTTT(250)}, 
+  {OPCODE_JMP, 2, 0b00000, 100}, 
+  {OPCODE_JMP, 1, 0b00000, 100} //Last step should be jump back 
+};
+
+constexpr animEntry animationMedium[] = 
+{
+  {OPCODE_PLAY, 0, 0b11110, MTTT(250)},
+  {OPCODE_PLAY, 0, 0b11101, MTTT(250)}, 
+  {OPCODE_PLAY, 0, 0b11011, MTTT(250)},
+  {OPCODE_PLAY, 0, 0b10111, MTTT(250)},
+  {OPCODE_PLAY, 0, 0b01111, MTTT(250)}, 
+  {OPCODE_PLAY, 0, 0b11111, MTTT(250)},
+  {OPCODE_PLAY, 0, 0b00000, MTTT(250)},
+  {OPCODE_JMP, 7, 0b00000, 3},
+  {OPCODE_PLAY, 0, 0b10111, MTTT(250)},
+  {OPCODE_PLAY, 0, 0b01111, MTTT(250)}, 
+  {OPCODE_JMP, 2, 0b00000, 100}, 
+  {OPCODE_JMP, 1, 0b00000, 100} //Last step should be jump back 
+};
+
+constexpr animEntry animationFast[] = 
+{
+  {OPCODE_PLAY, 0, 0b11110, MTTT(10)},
+  {OPCODE_PLAY, 0, 0b11101, MTTT(10)}, 
+  {OPCODE_PLAY, 0, 0b11011, MTTT(10)},
+  {OPCODE_PLAY, 0, 0b10111, MTTT(10)},
+  {OPCODE_PLAY, 0, 0b01111, MTTT(10)}, 
+  {OPCODE_PLAY, 0, 0b11111, MTTT(10)},
+  {OPCODE_PLAY, 0, 0b00000, MTTT(10)},
+  {OPCODE_JMP, 7, 0b00000, 3},
+  {OPCODE_PLAY, 0, 0b10111, MTTT(10)},
+  {OPCODE_PLAY, 0, 0b01111, MTTT(10)}, 
+  {OPCODE_JMP, 2, 0b00000, 100}, 
+  {OPCODE_JMP, 1, 0b00000, 100} //Last step should be jump back 
+};
+
+const LEDOutput leds;
+
+const Animation a1(animationSlow, sizeof(animationSlow)/sizeof(animEntry));
+const Animation a2(animationMedium, sizeof(animationMedium)/sizeof(animEntry));
+const Animation a3(animationFast, sizeof(animationFast)/sizeof(animEntry));
+
+const Animation* animList[3] = {&a1, &a2, &a3};
+
+AnimationPlayer player(&leds); 
+
+AnimationManager mgr(animList, 3, player);
+
+volatile uint8_t flag_interrupt = 0;
+volatile uint8_t flag_250ms = 0;
+volatile uint8_t counter_interrupt = 0;
+
+//Interrupt each 10ms
 ISR(TCA0_OVF_vect)
 {
-  //ending conditions
-  pulse_counter++;
-  if((state == 12) && (!(PORTA.IN & (1 << 1)))){    //50Hz
-    if(selected_animation != 1){
-      current_frame = 0;
-    }
-    selected_animation = 1;
-    
-  }
-  else if((state == 7) && (!(PORTA.IN & (1 << 1)))){ //100Hz
-    if(selected_animation != 2){
-        current_frame = 0;
-    }
-    selected_animation = 2;
-  }
-  else if((state == 20) && (!(PORTA.IN & (1 << 1)))){ //Silent
-    if(selected_animation != 0){
-        
-        current_frame = 0;
-    }
-    selected_animation = 0;
+  flag_interrupt = 1; //Set flag only, do job in main loop
+  counter_interrupt++;
+  if(counter_interrupt >= 25) {
+    flag_250ms = 1;
+    counter_interrupt = 0;
   }
 
-  if((selected_animation == 0) && (pulse_counter >= animation_0[current_frame][5])){
-    current_frame++;
-    pulse_counter = 0;
-  }
-  else if((selected_animation == 1) && (pulse_counter >= animation_1[current_frame][5])){
-    current_frame++;
-    pulse_counter = 0;
-  }
-  else if((selected_animation == 2) && (pulse_counter >= animation_2[current_frame][5])){
-    current_frame++;
-    pulse_counter = 0;
-  }
-
-  if(PORTA.IN & (1 << 1)){
-    state = state_machine[state][1];
-  }
-  else{
-    state = state_machine[state][0];
-  }
-  
-  TCA0.SINGLE.CTRLESET = 0x08;
+  TCA0.SINGLE.INTFLAGS = 0x01;
 }
-int main(void)
-{
-  //CCP = 0xD8;
 
-  //Clock divider to 64 and enable bit
+int main() {
+
+   //Clock divider to 64 and enable bit
   TCA0.SINGLE.CTRLA = TCA_SINGLE_CLKSEL_DIV64_gc;
-  TCA0.SINGLE.CTRLA |= 1;
-
-  //Top value to period register (523 = 1/1000th of a second)
-  TCA0.SINGLE.PER = 1307;  //400Hz u = 1000/400
-
+  //Top value to period register (519 = 1/100th of a second)
+  TCA0.SINGLE.PER = 519;  //100Hz - 10ms
   //Enable overflow interrupt at bit 0 of interrupt controll
   TCA0.SINGLE.INTCTRL = 0x01;
+  TCA0.SINGLE.CTRLA |= 1;
 
   //Enable interrupts globally by writing a '1' to the Global Interrupt Enable bit (I) in the CPU Statusregister (CPU.SREG).
   CPU_SREG |= 0x80;
 
-  PORTB.DIR = 0xFF;
-  PORTA.DIR = 0xFD;
+  uint8_t last_input_frequency = 0;
+  uint8_t curr_input_cntr = 0;
+  uint8_t last_input = (PORTA.IN & (1 << 1));
 
-  
-  PORTA.OUT = 0xFD;
-  PORTB.OUT = 0xFF;
-  PORTA.PIN6CTRL = 0x00;
-
-  uint8_t animation_counter = 0;
   while(1){
 
-    uint8_t tempB = 0;
-    uint8_t tempA = 0;
-    uint8_t val = 0;
-    if(selected_animation == 0){
-
-      if(current_frame > ANIMATION_0_FRAMES - 1){
-        current_frame = 0;
-      }
-
-      val = animation_0[current_frame][0];
-      tempB |= (val << 1);
-      val = animation_0[current_frame][1];
-      tempB |= (val << 0);
-
-      val = animation_0[current_frame][2];
-      tempA |= (val << 2);
-      val = animation_0[current_frame][3];
-      tempA |= (val << 3);
-      val = animation_0[current_frame][4];
-      tempA |= (val << 7);
-
-      
-
-
+    //Play the animation each 10ms!
+    if(flag_interrupt) {
+      flag_interrupt = 0;
+      mgr.play(last_input_frequency);
     }
-    else if(selected_animation == 1){
 
-      if(current_frame > ANIMATION_1_FRAMES - 1){
-        current_frame = 0;
-      }
-
-      val = animation_1[current_frame][0];
-      tempB |= (val << 1);
-      val = animation_1[current_frame][1];
-      tempB |= (val << 0);
-
-      val = animation_1[current_frame][2];
-      tempA |= (val << 2);
-      val = animation_1[current_frame][3];
-      tempA |= (val << 3);
-      val = animation_1[current_frame][4];
-      tempA |= (val << 7);
-
-
-      if(current_frame == 5){
-        animation_counter++;
-        current_frame = 1;
-        if(animation_counter == 5){
-          animation_counter = 0;
-          current_frame = 6;
-        }
-      }
-      else if(current_frame == 8){
-        animation_counter++;
-        current_frame = 6;
-        if(animation_counter == 15){
-          animation_counter = 0; 
-          current_frame = 9;
-        }
-      }
-        
-      else if(current_frame == 12){
-        animation_counter++;
-        current_frame = 9;
-        if(animation_counter == 15){
-          current_frame = 0;
-          animation_counter = 0;
-        }
-      }
-
-      else if(current_frame == 16){
-        animation_counter++;
-        current_frame = 13;
-        if(animation_counter == 30){
-          current_frame = 0;
-          animation_counter = 0;
-        }
-      }
-
+    //Each cycle check for input signal switch (freq meas)
+    uint8_t curr_input = (PORTA.IN & (1 << 1));
+    if(last_input != curr_input) {
+      if(curr_input_cntr < 255) //protection against too high frequency
+        curr_input_cntr++;
     }
-    else if(selected_animation == 2){
+    last_input = curr_input;
 
-      if(current_frame > ANIMATION_2_FRAMES - 1){
-        current_frame = 0;
-      }
-
-      val = animation_2[current_frame][0];
-      tempB |= (val << 1);
-      val = animation_2[current_frame][1];
-      tempB |= (val << 0);
-
-      val = animation_2[current_frame][2];
-      tempA |= (val << 2);
-      val = animation_2[current_frame][3];
-      tempA |= (val << 3);
-      val = animation_2[current_frame][4];
-      tempA |= (val << 7);
+    //Each 250ms update frequency
+    if(flag_250ms) {
+      flag_250ms = 0;
+       //Multiply by 4 (250ms * 4) and divide by 2 to get freq from pulses number 
+      last_input_frequency = curr_input_cntr * 2;
+      curr_input_cntr = 0;
     }
-    PORTB.OUT = tempB;
-    PORTA.OUT = tempA;
+
   }
 
+  return 0;
 }
