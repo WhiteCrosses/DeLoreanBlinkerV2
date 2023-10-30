@@ -15,7 +15,10 @@
 
 #define AUX 0x02;         //PA1
 
-#define ANIMATION_1_FRAMES 10
+#define ANIMATION_2_FRAMES 6
+#define ANIMATION_1_FRAMES 17
+#define ANIMATION_0_FRAMES 6
+
 
 #define DELAY 1000
 
@@ -26,21 +29,45 @@
 #include <util/atomic.h>
 
 volatile int clock_counter = 0;
-volatile int pulse_counter = 0;
+volatile uint8_t pulse_counter = 0;
 volatile int selected_animation = 1;
 
-const int animation_1[ANIMATION_1_FRAMES][6] = {
-  {0, 0, 0, 0, 0, 1},
-  {0, 0, 0, 0, 1, 1},
-  {0, 0, 0, 1, 1, 1},
-  {0, 0, 1, 1, 1, 1},
-  {0, 1, 1, 1, 1, 1},
-  {1, 1, 1, 1, 1, 1},
-  {1, 1, 1, 1, 0, 1},
-  {1, 1, 1, 0, 0, 1},
-  {1, 1, 0, 0, 0, 1},
-  {1, 0, 0, 0, 0, 1}
+const int animation_2[ANIMATION_2_FRAMES][6] = {
+  {0, 0, 0, 0, 1, 100},
+  {0, 0, 0, 1, 0, 100},
+  {0, 0, 0, 0, 1, 100},
+  {0, 0, 0, 1, 0, 100},
+  {0, 0, 0, 0, 1, 100},
+  {0, 0, 0, 1, 0, 100}
+};
 
+const int animation_0[ANIMATION_0_FRAMES][6] = {
+  {1, 1, 1, 0, 1, 5},
+  {1, 1, 0, 1, 1, 5},
+  {1, 0, 1, 1, 1, 5},
+  {0, 1, 1, 1, 1, 5},
+  {1, 0, 1, 1, 1, 5},
+  {1, 1, 0, 1, 1, 5}
+
+};
+const int animation_1[ANIMATION_1_FRAMES][6] = {
+  {0, 0, 0, 0, 1, 200},
+  {0, 0, 0, 1, 1, 5},
+  {0, 0, 1, 0, 1, 5},
+  {0, 1, 0, 0, 1, 5},
+  {1, 0, 0, 0, 1, 5},
+  {0, 0, 0, 1, 1, 4},
+  {0, 0, 1, 0, 1, 4},
+  {0, 1, 0, 0, 1, 4},
+  {1, 0, 0, 0, 1, 4},
+  {0, 0, 0, 1, 0, 3},
+  {0, 0, 1, 0, 1, 3},
+  {0, 1, 0, 0, 0, 3},
+  {1, 0, 0, 0, 1, 3},
+  {0, 0, 0, 1, 0, 2},
+  {0, 0, 1, 0, 1, 2},
+  {0, 1, 0, 0, 0, 2},
+  {1, 0, 0, 0, 1, 2}
 };
 
 const int state_machine[21][2]={
@@ -68,38 +95,43 @@ const int state_machine[21][2]={
 };
 
 volatile int state = 0;
-volatile int currrent_frame = 0;
+volatile uint8_t current_frame = 0;
 ISR(TCA0_OVF_vect)
 {
   //ending conditions
+  pulse_counter++;
   if((state == 12) && (!(PORTA.IN & (1 << 1)))){    //50Hz
+    if(selected_animation != 1){
+      current_frame = 0;
+    }
     selected_animation = 1;
+    
   }
   else if((state == 7) && (!(PORTA.IN & (1 << 1)))){ //100Hz
+    if(selected_animation != 2){
+        current_frame = 0;
+    }
     selected_animation = 2;
   }
   else if((state == 20) && (!(PORTA.IN & (1 << 1)))){ //Silent
+    if(selected_animation != 0){
+        
+        current_frame = 0;
+    }
     selected_animation = 0;
   }
 
-  if((selected_animation == 1) && (pulse_counter >= animation_1[currrent_frame][5])){
-    currrent_frame++;
+  if((selected_animation == 0) && (pulse_counter >= animation_0[current_frame][5])){
+    current_frame++;
     pulse_counter = 0;
   }
-  else if((selected_animation == 2) && (pulse_counter >= animation_1[currrent_frame][5])){
-    currrent_frame++;
+  else if((selected_animation == 1) && (pulse_counter >= animation_1[current_frame][5])){
+    current_frame++;
     pulse_counter = 0;
   }
-  else if((selected_animation == 0) && (pulse_counter >= animation_1[currrent_frame][5])){
-    currrent_frame++;
+  else if((selected_animation == 2) && (pulse_counter >= animation_2[current_frame][5])){
+    current_frame++;
     pulse_counter = 0;
-  }
-  else{
-    pulse_counter++;
-  }
-
-  if(currrent_frame >= 10){
-    currrent_frame = 0;
   }
 
   if(PORTA.IN & (1 << 1)){
@@ -131,15 +163,114 @@ int main(void)
   PORTB.DIR = 0xFF;
   PORTA.DIR = 0xFD;
 
-  uint8_t current_frame = 0;
+  
   PORTA.OUT = 0xFD;
   PORTB.OUT = 0xFF;
   PORTA.PIN6CTRL = 0x00;
+
+  uint8_t animation_counter = 0;
   while(1){
-    int temp = 0;
-    temp |= (animation_1[current_frame][4] << 1);
-    temp |= (animation_1[current_frame][3] << 0);
-    PORTB.OUT = temp;
+
+    uint8_t tempB = 0;
+    uint8_t tempA = 0;
+    uint8_t val = 0;
+    if(selected_animation == 0){
+
+      if(current_frame > ANIMATION_0_FRAMES - 1){
+        current_frame = 0;
+      }
+
+      val = animation_0[current_frame][0];
+      tempB |= (val << 1);
+      val = animation_0[current_frame][1];
+      tempB |= (val << 0);
+
+      val = animation_0[current_frame][2];
+      tempA |= (val << 2);
+      val = animation_0[current_frame][3];
+      tempA |= (val << 3);
+      val = animation_0[current_frame][4];
+      tempA |= (val << 7);
+
+      
+
+
+    }
+    else if(selected_animation == 1){
+
+      if(current_frame > ANIMATION_1_FRAMES - 1){
+        current_frame = 0;
+      }
+
+      val = animation_1[current_frame][0];
+      tempB |= (val << 1);
+      val = animation_1[current_frame][1];
+      tempB |= (val << 0);
+
+      val = animation_1[current_frame][2];
+      tempA |= (val << 2);
+      val = animation_1[current_frame][3];
+      tempA |= (val << 3);
+      val = animation_1[current_frame][4];
+      tempA |= (val << 7);
+
+
+      if(current_frame == 5){
+        animation_counter++;
+        current_frame = 1;
+        if(animation_counter == 5){
+          animation_counter = 0;
+          current_frame = 6;
+        }
+      }
+      else if(current_frame == 8){
+        animation_counter++;
+        current_frame = 6;
+        if(animation_counter == 15){
+          animation_counter = 0; 
+          current_frame = 9;
+        }
+      }
+        
+      else if(current_frame == 12){
+        animation_counter++;
+        current_frame = 9;
+        if(animation_counter == 15){
+          current_frame = 0;
+          animation_counter = 0;
+        }
+      }
+
+      else if(current_frame == 16){
+        animation_counter++;
+        current_frame = 13;
+        if(animation_counter == 30){
+          current_frame = 0;
+          animation_counter = 0;
+        }
+      }
+
+    }
+    else if(selected_animation == 2){
+
+      if(current_frame > ANIMATION_2_FRAMES - 1){
+        current_frame = 0;
+      }
+
+      val = animation_2[current_frame][0];
+      tempB |= (val << 1);
+      val = animation_2[current_frame][1];
+      tempB |= (val << 0);
+
+      val = animation_2[current_frame][2];
+      tempA |= (val << 2);
+      val = animation_2[current_frame][3];
+      tempA |= (val << 3);
+      val = animation_2[current_frame][4];
+      tempA |= (val << 7);
+    }
+    PORTB.OUT = tempB;
+    PORTA.OUT = tempA;
   }
 
 }
