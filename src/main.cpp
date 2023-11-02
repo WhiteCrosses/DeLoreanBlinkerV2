@@ -25,6 +25,7 @@ class LEDOutput {
     LEDOutput() {
         PORTB.DIR = 0xFF;
         PORTA.DIR = 0xFD;
+        PORTA.PIN1CTRL |= (1<<3);
     }
 
     void Set(uint8_t o) {
@@ -205,6 +206,8 @@ class AnimationManager{
     uint8_t animListSize;
     const AnimationPlayer& p;
 
+
+    uint8_t selectedAnimation = 0;
   public:
     AnimationManager(const Animation** _animList, uint8_t _animListSize, AnimationPlayer& _p) : 
       animList(_animList), animListSize(_animListSize), p(_p) {
@@ -213,18 +216,27 @@ class AnimationManager{
         p.resetAnimation();
       };
 
-      void play(uint8_t freq){
+      void play(uint16_t freq){
+        uint8_t newSelectedAnimation;
         //TODO: Depending on frequency select correct animation
         //Think how to connect external signal handling
         //Suggestion: create small simple interface class similar to LEDOutput
         //Which will give frequency as number 0, 1, 2: 0 -> 0 to 10hz, 1-> 11 to 70hz, 2-> over 70hz
-        if(freq < 10)
-          p.setActiveAnimation(animList[0]);
-        else if (freq >= 10 && freq < 70)
-          p.setActiveAnimation(animList[1]);
-        else
-          p.setActiveAnimation(animList[2]);
-          
+        if(freq < 20)
+          newSelectedAnimation = 0;
+        else if (freq >= 40 && freq < 90)
+          newSelectedAnimation = 1;
+        else if (freq > 90 && freq < 150)
+          newSelectedAnimation = 2;
+        else 
+          newSelectedAnimation = 3;
+
+        if(newSelectedAnimation != selectedAnimation) {
+          p.resetAnimation();
+          p.setActiveAnimation(animList[newSelectedAnimation]);
+          selectedAnimation = newSelectedAnimation;
+        }
+         
         //TODO: When animation changes, reset old animation
         p.step();
       }
@@ -233,49 +245,44 @@ class AnimationManager{
 
 constexpr animEntry animationSlow[] = 
 {
-  {OPCODE_PLAY, 0, 0b11110, MTTT(1000)},
-  {OPCODE_PLAY, 0, 0b11101, MTTT(1000)}, 
-  {OPCODE_PLAY, 0, 0b11011, MTTT(1000)},
-  {OPCODE_PLAY, 0, 0b10111, MTTT(1000)},
-  {OPCODE_PLAY, 0, 0b01111, MTTT(1000)}, 
-  {OPCODE_PLAY, 0, 0b11111, MTTT(1000)},
-  {OPCODE_PLAY, 0, 0b00000, MTTT(1000)},
-  {OPCODE_JMP, 7, 0b00000, 3},
-  {OPCODE_PLAY, 0, 0b10111, MTTT(250)},
-  {OPCODE_PLAY, 0, 0b01111, MTTT(250)}, 
-  {OPCODE_JMP, 2, 0b00000, 100}, 
+  {OPCODE_PLAY, 0, 0b11110, MTTT(500)},
+  {OPCODE_PLAY, 0, 0b11101, MTTT(500)}, 
+  {OPCODE_PLAY, 0, 0b11011, MTTT(500)},
+  {OPCODE_PLAY, 0, 0b10111, MTTT(500)},
+  {OPCODE_JMP, 4, 0b00000, 0}, 
   {OPCODE_JMP, 1, 0b00000, 100} //Last step should be jump back 
 };
 
 constexpr animEntry animationMedium[] = 
 {
-  {OPCODE_PLAY, 0, 0b11110, MTTT(250)},
-  {OPCODE_PLAY, 0, 0b11101, MTTT(250)}, 
-  {OPCODE_PLAY, 0, 0b11011, MTTT(250)},
-  {OPCODE_PLAY, 0, 0b10111, MTTT(250)},
-  {OPCODE_PLAY, 0, 0b01111, MTTT(250)}, 
-  {OPCODE_PLAY, 0, 0b11111, MTTT(250)},
-  {OPCODE_PLAY, 0, 0b00000, MTTT(250)},
+  {OPCODE_PLAY, 0, 0b11110, MTTT(30)},
+  {OPCODE_PLAY, 0, 0b11100, MTTT(30)},
+  {OPCODE_PLAY, 0, 0b11101, MTTT(30)},
+  {OPCODE_PLAY, 0, 0b11001, MTTT(30)}, 
+  {OPCODE_PLAY, 0, 0b10011, MTTT(30)},
+  {OPCODE_PLAY, 0, 0b10111, MTTT(30)},
   {OPCODE_JMP, 7, 0b00000, 3},
-  {OPCODE_PLAY, 0, 0b10111, MTTT(250)},
-  {OPCODE_PLAY, 0, 0b01111, MTTT(250)}, 
-  {OPCODE_JMP, 2, 0b00000, 100}, 
   {OPCODE_JMP, 1, 0b00000, 100} //Last step should be jump back 
 };
 
 constexpr animEntry animationFast[] = 
 {
-  {OPCODE_PLAY, 0, 0b11110, MTTT(10)},
-  {OPCODE_PLAY, 0, 0b11101, MTTT(10)}, 
-  {OPCODE_PLAY, 0, 0b11011, MTTT(10)},
-  {OPCODE_PLAY, 0, 0b10111, MTTT(10)},
-  {OPCODE_PLAY, 0, 0b01111, MTTT(10)}, 
-  {OPCODE_PLAY, 0, 0b11111, MTTT(10)},
-  {OPCODE_PLAY, 0, 0b00000, MTTT(10)},
-  {OPCODE_JMP, 7, 0b00000, 3},
-  {OPCODE_PLAY, 0, 0b10111, MTTT(10)},
-  {OPCODE_PLAY, 0, 0b01111, MTTT(10)}, 
-  {OPCODE_JMP, 2, 0b00000, 100}, 
+  {OPCODE_PLAY, 0, 0b00000, MTTT(500)},
+  {OPCODE_PLAY, 0, 0b11111, MTTT(200)},
+  {OPCODE_CNTRJMP, 2, 0b00000, 1},
+  {OPCODE_PLAY, 0, 0b00000, MTTT(500)},
+  {OPCODE_PLAY, 0, 0b10000, MTTT(20)},
+  {OPCODE_PLAY, 0, 0b00000, MTTT(150)},
+  {OPCODE_PLAY, 0, 0b10000, MTTT(20)},  
+  {OPCODE_PLAY, 0, 0b00000, MTTT(100)},
+  {OPCODE_JMP, 5, 0b00000, 0},
+  {OPCODE_JMP, 1, 0b00000, 100} //Last step should be jump back 
+};
+
+constexpr animEntry animationLast[] = 
+{
+  {OPCODE_PLAY, 0, 0b00000, MTTT(1000)},
+  {OPCODE_JMP, 1, 0b00000, 3},
   {OPCODE_JMP, 1, 0b00000, 100} //Last step should be jump back 
 };
 
@@ -284,12 +291,14 @@ const LEDOutput leds;
 const Animation a1(animationSlow, sizeof(animationSlow)/sizeof(animEntry));
 const Animation a2(animationMedium, sizeof(animationMedium)/sizeof(animEntry));
 const Animation a3(animationFast, sizeof(animationFast)/sizeof(animEntry));
+const Animation a4(animationLast, sizeof(animationLast)/sizeof(animEntry));
 
-const Animation* animList[3] = {&a1, &a2, &a3};
+
+const Animation* animList[4] = {&a2, &a3, &a4, &a1};
 
 AnimationPlayer player(&leds); 
 
-AnimationManager mgr(animList, 3, player);
+AnimationManager mgr(animList, 4, player);
 
 volatile uint8_t flag_interrupt = 0;
 volatile uint8_t flag_250ms = 0;
@@ -313,7 +322,7 @@ int main() {
    //Clock divider to 64 and enable bit
   TCA0.SINGLE.CTRLA = TCA_SINGLE_CLKSEL_DIV64_gc;
   //Top value to period register (519 = 1/100th of a second)
-  TCA0.SINGLE.PER = 519;  //100Hz - 10ms
+  TCA0.SINGLE.PER = 519;  //1000Hz - 100ms
   //Enable overflow interrupt at bit 0 of interrupt controll
   TCA0.SINGLE.INTCTRL = 0x01;
   TCA0.SINGLE.CTRLA |= 1;
@@ -321,7 +330,7 @@ int main() {
   //Enable interrupts globally by writing a '1' to the Global Interrupt Enable bit (I) in the CPU Statusregister (CPU.SREG).
   CPU_SREG |= 0x80;
 
-  uint8_t last_input_frequency = 0;
+  uint16_t last_input_frequency = 0;
   uint8_t curr_input_cntr = 0;
   uint8_t last_input = (PORTA.IN & (1 << 1));
 
@@ -345,7 +354,7 @@ int main() {
     if(flag_250ms) {
       flag_250ms = 0;
        //Multiply by 4 (250ms * 4) and divide by 2 to get freq from pulses number 
-      last_input_frequency = curr_input_cntr * 2;
+      last_input_frequency = ((uint16_t)curr_input_cntr) * 4;
       curr_input_cntr = 0;
     }
 
